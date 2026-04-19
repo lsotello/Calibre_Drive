@@ -7,8 +7,18 @@ environment:
   sdk: ^3.11.4
 
 dependencies:
+  cached_network_image: ^3.4.1
+  google_sign_in: ^6.2.1
+  googleapis: ^13.1.0
+  extension_google_sign_in_as_googleapis_auth: ^2.0.12
   flutter:
     sdk: flutter
+  flutter_launcher_icons: ^0.14.4
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  share_plus: ^13.0.0
+  sqflite: ^2.4.2
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:
