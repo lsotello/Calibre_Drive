@@ -62,65 +62,82 @@ class GoogleDriveService {
     return response.bodyBytes;
   }
 
-  // Esta função faz a varredura e retorna um Mapa {Caminho: ID_do_Arquivo}
-  Future<Map<String, String>> scanFolderForCovers(String calibreRootId) async {
-    if (_driveApi == null) return {};
+  Future<void> scanEverything(String rootFolderId, dbService) async {
+    // 1. Mapear pastas: ID da pasta -> ID do Calibre
+    // Buscamos apenas pastas que tenham o (ID) no nome
+    Map<String, int> folderToCalibreId = {};
+    String? folderToken;
 
-    Map<String, String> folderNames = {};
-    Map<String, String?> folderParents = {};
-    String? pageToken;
-
-    // 1. Buscamos TODAS as pastas (com paginação)
     do {
-      final folderList = await _driveApi!.files.list(
-        q: "'$calibreRootId' in parents or mimeType = 'application/vnd.google-apps.folder'",
-        $fields: "nextPageToken, files(id, name, parents)",
-        pageSize: 1000,
-        pageToken: pageToken, // Passa o token da próxima página
+      final folders = await _driveApi!.files.list(
+        q: "mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        spaces: 'drive',
+        pageToken: folderToken,
       );
 
-      for (var f in folderList.files ?? []) {
-        folderNames[f.id!] = f.name!;
-        folderParents[f.id!] = f.parents?.first;
+      for (var f in folders.files ?? []) {
+        final match = RegExp(r'\((\d+)\)').firstMatch(f.name!);
+        if (match != null) {
+          folderToCalibreId[f.id!] = int.parse(match.group(1)!);
+        }
       }
+      folderToken = folders.nextPageToken;
+    } while (folderToken != null);
 
-      pageToken = folderList.nextPageToken; // Atualiza o token
-    } while (pageToken != null); // Repete enquanto houver mais páginas
+    // 2. Agora buscamos os arquivos (Capas e Livros)
+    List<Map<String, String>> coverList = [];
+    List<Map<String, dynamic>> fileList = [];
+    String? fileToken;
 
-    // 2. Buscamos todos os cover.jpg (também com paginação se necessário)
-    Map<String, String> coverMap = {};
-    pageToken = null; // Reseta para a nova busca
-
+    // 2. Agora buscamos os arquivos (Capas e Livros) em qualquer lugar do Drive
     do {
-      final fileList = await _driveApi!.files.list(
-        q: "name = 'cover.jpg' and trashed = false",
-        $fields: "nextPageToken, files(id, parents)",
+      final result = await _driveApi!.files.list(
+        // Buscamos apenas arquivos (não pastas) que não estão na lixeira
+        q: "trashed = false and mimeType != 'application/vnd.google-apps.folder'",
+        spaces: 'drive',
+        pageToken: fileToken,
         pageSize: 1000,
-        pageToken: pageToken,
+        $fields: "nextPageToken, files(id, name, parents)",
       );
 
-      for (var file in fileList.files ?? []) {
-        if (file.parents != null && file.parents!.isNotEmpty) {
-          String bookFolderId = file.parents!.first;
-          String? authorFolderId = folderParents[bookFolderId];
+      if (result.files != null) {
+        for (var file in result.files!) {
+          // Se o arquivo não tiver pai, ignoramos
+          if (file.parents == null || file.parents!.isEmpty) continue;
 
-          if (authorFolderId != null && authorFolderId != calibreRootId) {
-            String authorName = folderNames[authorFolderId] ?? "";
-            String bookFolderName = folderNames[bookFolderId] ?? "";
+          String parentId = file.parents!.first;
 
-            if (authorName.isNotEmpty && bookFolderName.isNotEmpty) {
-              String fullPath = "$authorName/$bookFolderName";
-              coverMap[fullPath] = file.id!;
-              // Print de debug para você confirmar no console
-              print("Mapeando caminho: $fullPath -> ID: ${file.id}");
+          // Aqui está a mágica: verificamos se o pai deste arquivo
+          // é uma das 997 pastas de livros que mapeamos no passo 1
+          int? bookId = folderToCalibreId[parentId];
+
+          if (bookId != null) {
+            String name = file.name!.toLowerCase();
+
+            if (name == 'cover.jpg') {
+              coverList.add({'id': bookId.toString(), 'fileId': file.id!});
+            } else if (name.endsWith('.epub')) {
+              fileList.add({
+                'book_id': bookId,
+                'format': 'epub',
+                'file_id': file.id!,
+              });
+            } else if (name.endsWith('.pdf')) {
+              fileList.add({
+                'book_id': bookId,
+                'format': 'pdf',
+                'file_id': file.id!,
+              });
             }
           }
         }
       }
-      pageToken = fileList.nextPageToken;
-    } while (pageToken != null);
+      fileToken = result.nextPageToken;
+    } while (fileToken != null);
 
-    return coverMap;
+    // 3. Salvar no banco
+    await dbService.saveCoverCache(coverList);
+    await dbService.saveFileCache(fileList);
   }
 
   // Novo: Pega metadados para comparar datas

@@ -28,10 +28,21 @@ class DatabaseService {
       cachePath,
       version: 1,
       onCreate: (db, version) async {
+        // Tabela de Capas
         await db.execute('''
-          CREATE TABLE IF NOT EXISTS drive_cache (
-            folder_path TEXT PRIMARY KEY, 
-            cover_file_id TEXT
+          CREATE TABLE IF NOT EXISTS cover_cache (
+            book_id INTEGER PRIMARY KEY, 
+            google_drive_id TEXT
+          )
+        ''');
+
+        // Tabela de Arquivos (Epub/PDF)
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS file_cache (
+            book_id INTEGER,
+            format TEXT,
+            file_id TEXT,
+            PRIMARY KEY (book_id, format)
           )
         ''');
       },
@@ -40,22 +51,25 @@ class DatabaseService {
 
   // Função para salvar o ID da capa sem tocar no banco do Calibre
   Future<void> saveCoverId(String folderId, String fileId) async {
-    await _cacheDb?.insert('drive_cache', {
-      'folder_id': folderId,
-      'cover_file_id': fileId,
+    await _cacheDb?.insert('cover_cache', {
+      'book_id': folderId,
+      'google_drive_id': fileId,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   // Função para buscar o ID da capa no nosso banco auxiliar
-  Future<String?> getCoverId(String folderId) async {
+  Future<String?> getCoverId(String bookId) async {
+    if (_cacheDb == null) return null;
+
     final res = await _cacheDb?.query(
-      'drive_cache',
-      columns: ['cover_file_id'],
-      where: 'folder_id = ?',
-      whereArgs: [folderId],
+      'cover_cache',
+      columns: ['google_drive_id'],
+      where: 'book_id = ?',
+      whereArgs: [bookId],
     );
+
     return res?.isNotEmpty == true
-        ? res!.first['cover_file_id'] as String
+        ? res!.first['google_drive_id'] as String
         : null;
   }
 
@@ -67,12 +81,8 @@ class DatabaseService {
     String? formatFilter,
   }) async {
     if (_cacheDb == null) {
-      //await initDatabases();
-
-      final test = await _cacheDb!.rawQuery(
-        'SELECT COUNT(*) as total FROM drive_cache',
-      );
-      print("Quantidade de capas no cache: ${test.first['total']}");
+      print("Banco de Cache ainda não disponível.");
+      return [];
     }
 
     if (_booksDb == null) {
@@ -124,37 +134,17 @@ class DatabaseService {
     // 2. Busca TODO o seu cache local de capas (do app_cache.db)
     // Assumindo que _cacheDb é o seu banco local
     final List<Map<String, dynamic>> cacheMaps = await _cacheDb!.query(
-      'drive_cache',
+      'cover_cache',
     );
 
     // Criamos um mapa rápido para busca: { "caminho/no/calibre": "fileIdDoGoogle" }
-    Map<String, String> coverMap = {
+    Map<int, String> coverMap = {
       for (var item in cacheMaps)
-        item['folder_path'].toString().trim(): item['cover_file_id'].toString(),
+        item['book_id'] as int: item['google_drive_id'].toString(),
     };
 
     // 3. Unimos os dois no Dart
-    int index = 0;
-
     return results.map((map) {
-      final bookPath = map['path'].toString().trim();
-      final coverId = coverMap[bookPath];
-
-      // ADICIONE ESTES PRINTS:
-      if (index < 5) {
-        // Printa apenas os 5 primeiros para não inundar o console
-        print("--- COMPARANDO ---");
-        print("DB Path:  '$bookPath'");
-        print("Cache Keys Disponíveis: ${coverMap.keys.take(5).toList()}");
-        print("------------------");
-        index = index + 1;
-      }
-
-      // LOG PARA DEBUG:
-      //print("Tentando casar livro: ${map['title']}");
-      //print("Path do livro no DB: $bookPath");
-      print("ID da capa encontrado no cache: $coverId");
-
       // 1. Aqui você poderia buscar os formatos reais se quisesse,
       // mas por enquanto passamos uma lista vazia [] para não dar erro.
       List<String> formats = [];
@@ -162,22 +152,24 @@ class DatabaseService {
       return BookModel.fromMap(
         map, // 1º argumento posicional
         formats, // 2º argumento posicional
-        coverId: coverMap[map['path']], // Argumento nomeado (dentro das {})
+        coverId:
+            coverMap[map['id']], // BUSCA PELO ID (map['id']), NÃO PELO PATH
       );
     }).toList();
   }
 
   // Modificado para aceitar o map completo e usar transaction (mais rápido)
-  Future<void> saveCoverCache(Map<String, String> coverMap) async {
-    if (_cacheDb == null) await initDatabases();
-    await _cacheDb!.transaction((txn) async {
-      for (var entry in coverMap.entries) {
-        await txn.insert('drive_cache', {
-          'folder_path': entry.key,
-          'cover_file_id': entry.value,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-    });
+  Future<void> saveCoverCache(List<Map<String, String>> covers) async {
+    if (_cacheDb == null) return;
+
+    final batch = _cacheDb!.batch();
+    for (var cover in covers) {
+      batch.insert('cover_cache', {
+        'book_id': int.parse(cover['id']!), // Converte o ID para int
+        'google_drive_id': cover['fileId']!,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
   }
 
   Future<void> openCalibreDatabase(String path) async {
@@ -212,12 +204,54 @@ class DatabaseService {
   // Busca um ID de capa específico no cache
   Future<String?> getCachedCoverId(String folderPath) async {
     final res = await _cacheDb?.query(
-      'drive_cache',
-      where: 'folder_path = ?',
+      'cover_cache',
+      where: 'book_id = ?',
       whereArgs: [folderPath],
     );
     return res?.isNotEmpty == true
         ? res!.first['cover_file_id'] as String
         : null;
+  }
+
+  Future<String?> getBookComment(int bookId) async {
+    if (_booksDb == null) return null;
+
+    final List<Map<String, dynamic>> res = await _booksDb!.query(
+      'comments',
+      columns: ['text'],
+      where: 'book = ?',
+      whereArgs: [bookId],
+    );
+
+    if (res.isNotEmpty) {
+      // O Calibre às vezes salva em HTML, podemos precisar limpar depois
+      return res.first['text'] as String;
+    }
+    return null;
+  }
+
+  // No seu DatabaseService
+  Future<void> saveFileCache(List<Map<String, dynamic>> files) async {
+    if (_cacheDb == null) return;
+
+    final batch = _cacheDb!.batch();
+    for (var file in files) {
+      batch.insert('file_cache', {
+        'book_id': file['book_id'],
+        'format': file['format'],
+        'file_id': file['file_id'],
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  Future<String?> getFileId(int bookId, String format) async {
+    final res = await _cacheDb!.query(
+      'file_cache',
+      where: 'book_id = ? AND format = ?',
+      whereArgs: [bookId, format.toLowerCase()],
+    );
+    if (res.isNotEmpty) return res.first['file_id'] as String;
+    return null;
   }
 }

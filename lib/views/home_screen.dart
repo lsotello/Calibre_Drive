@@ -1,5 +1,5 @@
 import 'dart:io';
-
+import 'package:calibre_drive/views/details_screen.dart';
 import 'package:calibre_drive/widgets/book_cover.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -33,13 +33,21 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Inicializa o banco de cache antes de tudo
-    _dbService.initDatabases().then((_) => _syncLibrary());
+    _initApp();
+  }
+
+  Future<void> _initApp() async {
+    await _dbService.initDatabases();
+    // Primeiro, tenta abrir o que já existe para mostrar algo ao usuário
+    await _dbService.openExistingDatabase();
+    await _performSearch();
+
+    // Depois, faz a verificação de sincronização em segundo plano
+    _syncLibrary();
   }
 
   Future<void> _syncLibrary() async {
     setState(() => _isLoading = true);
-
     try {
       await _dbService.initDatabases();
       if (!await _googleDriveService.signIn()) return;
@@ -93,10 +101,11 @@ class _HomeScreenState extends State<HomeScreen> {
             if (file != null) {
               await _dbService.openCalibreDatabase(file.path);
               // Atualiza capas apenas se o usuário baixar o banco novo
-              final covers = await _googleDriveService.scanFolderForCovers(
-                folderId,
-              );
-              await _dbService.saveCoverCache(covers);
+              await _googleDriveService.scanEverything(folderId, _dbService);
+
+              setState(() {
+                _isLoading = false;
+              });
             }
           } else {
             await _dbService.openExistingDatabase();
@@ -112,13 +121,6 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       setState(() => _isLoading = false);
     }
-  }
-
-  // Função auxiliar para comparar datas
-  Future<bool> _checkIfNeedsUpdate(dynamic remoteMetadata) async {
-    // Aqui você deve implementar a lógica de comparar a data do arquivo local
-    // com remoteMetadata.modifiedTime. Se não houver arquivo local, retorna true.
-    return true; // Simulação: sempre assume que precisa até você implementar o File.exists()
   }
 
   Future<bool?> _showUpdateDialog() {
@@ -291,34 +293,51 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _navigateToDetails(BookModel book) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) =>
+            BookDetailsScreen(book: book, authHeaders: _authHeaders),
+      ),
+    );
+  }
+
   // Stubs para os itens (serão widgets separados depois)
   Widget _buildGridItem(BookModel book) {
     return Card(
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // A CAPA DO LIVRO
-          Expanded(
-            child: AspectRatio(
-              aspectRatio: 2 / 3, // Proporção padrão de capas de livros
-              child: BookCover(
-                fileId: book.coverId, // Este ID vem do seu banco de cache
-                authHeaders: _authHeaders,
+      child: InkWell(
+        // <--- O InkWell deve envolver o conteúdo interno do Card
+        onTap: () => _navigateToDetails(book), // <--- Chamada direta aqui
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // A CAPA DO LIVRO
+            Expanded(
+              child: AspectRatio(
+                aspectRatio: 2 / 3,
+                child: BookCover(
+                  fileId: book.coverId,
+                  authHeaders: _authHeaders,
+                ),
               ),
             ),
-          ),
-          // O TÍTULO
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Text(
-              book.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.bold),
+            // O TÍTULO
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text(
+                book.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -376,9 +395,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ? const Icon(Icons.chevron_right, size: 18)
           : null,
 
-      onTap: () {
-        // Ação de clique
-      },
+      onTap: () => _navigateToDetails(book),
     );
   }
 }
