@@ -66,28 +66,67 @@ class GoogleDriveService {
   Future<Map<String, String>> scanFolderForCovers(String calibreRootId) async {
     if (_driveApi == null) return {};
 
+    Map<String, String> folderNames = {};
+    Map<String, String?> folderParents = {};
+    String? pageToken;
+
+    // 1. Buscamos TODAS as pastas (com paginação)
+    do {
+      final folderList = await _driveApi!.files.list(
+        q: "'$calibreRootId' in parents or mimeType = 'application/vnd.google-apps.folder'",
+        $fields: "nextPageToken, files(id, name, parents)",
+        pageSize: 1000,
+        pageToken: pageToken, // Passa o token da próxima página
+      );
+
+      for (var f in folderList.files ?? []) {
+        folderNames[f.id!] = f.name!;
+        folderParents[f.id!] = f.parents?.first;
+      }
+
+      pageToken = folderList.nextPageToken; // Atualiza o token
+    } while (pageToken != null); // Repete enquanto houver mais páginas
+
+    // 2. Buscamos todos os cover.jpg (também com paginação se necessário)
     Map<String, String> coverMap = {};
+    pageToken = null; // Reseta para a nova busca
 
-    // Query: Procure por arquivos chamados 'cover.jpg' dentro da biblioteca
-    // Nota: Em bibliotecas gigantes, precisamos de paginação (pageToken)
-    String query = "name = 'cover.jpg' and trashed = false";
+    do {
+      final fileList = await _driveApi!.files.list(
+        q: "name = 'cover.jpg' and trashed = false",
+        $fields: "nextPageToken, files(id, parents)",
+        pageSize: 1000,
+        pageToken: pageToken,
+      );
 
-    var fileList = await _driveApi!.files.list(
-      q: query,
-      spaces: 'drive',
-      $fields:
-          "files(id, name, parents)", // Precisamos dos 'parents' para saber de qual livro é
-    );
+      for (var file in fileList.files ?? []) {
+        if (file.parents != null && file.parents!.isNotEmpty) {
+          String bookFolderId = file.parents!.first;
+          String? authorFolderId = folderParents[bookFolderId];
 
-    if (fileList.files != null) {
-      for (var file in fileList.files!) {
-        if (file.id != null && file.parents != null) {
-          // Guardamos o ID da capa vinculado ao ID da pasta pai (o livro)
-          coverMap[file.parents!.first] = file.id!;
+          if (authorFolderId != null && authorFolderId != calibreRootId) {
+            String authorName = folderNames[authorFolderId] ?? "";
+            String bookFolderName = folderNames[bookFolderId] ?? "";
+
+            if (authorName.isNotEmpty && bookFolderName.isNotEmpty) {
+              String fullPath = "$authorName/$bookFolderName";
+              coverMap[fullPath] = file.id!;
+              // Print de debug para você confirmar no console
+              print("Mapeando caminho: $fullPath -> ID: ${file.id}");
+            }
+          }
         }
       }
-    }
+      pageToken = fileList.nextPageToken;
+    } while (pageToken != null);
+
     return coverMap;
+  }
+
+  // Novo: Pega metadados para comparar datas
+  Future<drive.File?> getFileMetadata(String fileId) async {
+    return await _driveApi!.files.get(fileId, $fields: "id, name, modifiedTime")
+        as drive.File;
   }
 
   Future<File?> downloadMetadata(String fileId) async {
@@ -135,5 +174,40 @@ class GoogleDriveService {
     );
 
     return list.files?.isNotEmpty == true ? list.files!.first.id : null;
+  }
+
+  // Retorna os cabeçalhos de autenticação para as imagens
+  Future<Map<String, String>> getAuthHeaders() async {
+    final user = _googleSignIn.currentUser;
+    if (user == null) {
+      print("Usuário não está logado!");
+      return {}; // Retorna vazio em vez de dar erro
+    }
+    return await user.authHeaders;
+  }
+
+  // Constrói a URL direta de visualização do Google Drive
+  String getImageUrl(String fileId) {
+    return "https://www.googleapis.com/drive/v3/files/$fileId?alt=media";
+  }
+
+  // Adicione este método ao seu GoogleDriveService
+
+  Future<drive.File?> getFileMetadataByName(
+    String fileName,
+    String parentId,
+  ) async {
+    if (_driveApi == null) return null;
+
+    final query =
+        "name = '$fileName' and '$parentId' in parents and trashed = false";
+
+    // Pedimos especificamente id, name e modifiedTime
+    final list = await _driveApi!.files.list(
+      q: query,
+      $fields: "files(id, name, modifiedTime)",
+    );
+
+    return list.files?.isNotEmpty == true ? list.files!.first : null;
   }
 }
