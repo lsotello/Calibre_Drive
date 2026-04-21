@@ -6,13 +6,23 @@ import 'dart:io'; // Necessário para manipular arquivos
 import 'package:path_provider/path_provider.dart';
 
 class GoogleDriveService {
+  drive.DriveApi? _driveApi;
   // Escopo estrito: Apenas leitura de arquivos
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: [drive.DriveApi.driveReadonlyScope],
+    scopes: [
+      'email',
+      'https://www.googleapis.com/auth/drive.readonly', // Ler metadados
+      'https://www.googleapis.com/auth/drive.file', // Baixar e manipular arquivos
+    ],
   );
 
   GoogleSignInAccount? _currentUser;
-  drive.DriveApi? _driveApi;
+  //drive.DriveApi? _driveApi;
+
+  Future<void> initializeWithHeaders(Map<String, String> authHeaders) async {
+    final client = GoogleAuthClient(authHeaders);
+    _driveApi = drive.DriveApi(client);
+  }
 
   // Getter para verificar se está logado
   bool get isSignedIn => _currentUser != null;
@@ -39,7 +49,10 @@ class GoogleDriveService {
   // 2. Busca o ID da pasta raiz da biblioteca Calibre
   // O usuário geralmente nomeia como "Biblioteca do Calibre" ou similar
   Future<String?> findCalibreFolderId(String folderName) async {
-    if (_driveApi == null) return null;
+    if (_driveApi == null) {
+      print("!!!!! ALERTA: A API DO DRIVE ESTÁ NULA NO SERVICE !!!!!");
+      return null;
+    }
 
     final query =
         "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
@@ -226,5 +239,64 @@ class GoogleDriveService {
     );
 
     return list.files?.isNotEmpty == true ? list.files!.first : null;
+  }
+
+  Future<File?> downloadBookFile(String fileId, String fileName) async {
+    if (_driveApi == null) {
+      print("!!!!! ALERTA: A API DO DRIVE ESTÁ NULA NO SERVICE !!!!!");
+      return null;
+    }
+
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File("${directory.path}/$fileName");
+
+      print("!!!!! ESTOU DENTRO DO SERVICE AGORA !!!!!");
+      print("Tentando baixar ID: $fileId");
+
+      // Mudança importante: Pegamos a resposta como 'dynamic' para evitar erro de cast
+      dynamic response = await _driveApi!.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      );
+
+      List<int> bytes = [];
+
+      // Verificamos se a resposta contém o Stream esperado
+      if (response is drive.Media) {
+        await for (var data in response.stream) {
+          bytes.addAll(data);
+        }
+      } else {
+        print("Resposta inesperada do Drive: ${response.runtimeType}");
+        return null;
+      }
+
+      if (bytes.isEmpty) {
+        print("Alerta: Recebidos 0 bytes do arquivo.");
+        return null;
+      }
+
+      await file.writeAsBytes(bytes, flush: true);
+      print("Download concluído: ${bytes.length} bytes salvos.");
+      return file;
+    } catch (e) {
+      // ESTE PRINT É O MAIS IMPORTANTE AGORA
+      print("ERRO REAL NA API DRIVE: $e");
+      return null;
+    }
+  }
+}
+
+class GoogleAuthClient extends http.BaseClient {
+  final Map<String, String> _headers;
+  final http.Client _client = http.Client();
+
+  GoogleAuthClient(this._headers);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    request.headers.addAll(_headers);
+    return _client.send(request);
   }
 }
