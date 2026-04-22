@@ -94,7 +94,7 @@ class DatabaseService {
     String sql = '''
       SELECT 
         b.id, b.title, b.path, b.series_index,
-        a.name AS author_name,
+        GROUP_CONCAT(a.name, ' & ') as author_name,
         s.name AS series_name
       FROM books b
       LEFT JOIN books_authors_link bal ON b.id = bal.book
@@ -122,6 +122,9 @@ class DatabaseService {
     if (whereClauses.isNotEmpty) {
       sql += ' WHERE ${whereClauses.join(' AND ')}';
     }
+
+    // Agrupa para não repetir livros com mais de um autor
+    sql += ' GROUP BY b.id ';
 
     // Ordenação (Padrão por título, mas fácil de mudar)
     sql += ' ORDER BY b.title COLLATE NOCASE ASC';
@@ -253,5 +256,19 @@ class DatabaseService {
     );
     if (res.isNotEmpty) return res.first['file_id'] as String;
     return null;
+  }
+
+  Future<void> closeDatabase() async {
+    final db = _booksDb; // Sua variável interna do banco
+    if (db != null) {
+      await db.close();
+      _booksDb = null;
+    }
+  }
+
+  Future<String> getDatabasePath() async {
+    final directory = await getApplicationDocumentsDirectory();
+    // O banco fica escondido do usuário, protegido pelo sistema
+    return "${directory.path}/metadata.db";
   }
 }

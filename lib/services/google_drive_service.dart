@@ -2,11 +2,19 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 import 'dart:io'; // Necessário para manipular arquivos
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
 
 class GoogleDriveService {
+  static final GoogleDriveService _instance = GoogleDriveService._internal();
+  factory GoogleDriveService() => _instance;
+  GoogleDriveService._internal();
+
   drive.DriveApi? _driveApi;
+  GoogleSignInAccount? _currentUser;
+
   // Escopo estrito: Apenas leitura de arquivos
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [
@@ -16,8 +24,7 @@ class GoogleDriveService {
     ],
   );
 
-  GoogleSignInAccount? _currentUser;
-  //drive.DriveApi? _driveApi;
+  //GoogleSignInAccount? _currentUser;
 
   Future<void> initializeWithHeaders(Map<String, String> authHeaders) async {
     final client = GoogleAuthClient(authHeaders);
@@ -59,20 +66,6 @@ class GoogleDriveService {
     final list = await _driveApi!.files.list(q: query, spaces: 'drive');
 
     return list.files?.isNotEmpty == true ? list.files!.first.id : null;
-  }
-
-  // 3. Download do arquivo metadata.db
-  Future<List<int>?> downloadMetadataDb(String fileId) async {
-    if (_driveApi == null) return null;
-
-    final response =
-        await _driveApi!.files.get(
-              fileId,
-              downloadOptions: drive.DownloadOptions.fullMedia,
-            )
-            as http.Response;
-
-    return response.bodyBytes;
   }
 
   Future<void> scanEverything(String rootFolderId, dbService) async {
@@ -153,21 +146,41 @@ class GoogleDriveService {
     await dbService.saveFileCache(fileList);
   }
 
-  // Novo: Pega metadados para comparar datas
   Future<drive.File?> getFileMetadata(String fileId) async {
-    return await _driveApi!.files.get(fileId, $fields: "id, name, modifiedTime")
-        as drive.File;
+    try {
+      // Verificamos se a API foi inicializada antes de usar
+      if (_driveApi == null) {
+        print("Erro: Google Drive API não inicializada.");
+        return null;
+      }
+
+      // Buscamos o arquivo de forma segura
+      final response = await _driveApi!.files.get(
+        fileId,
+        $fields: 'id, name, modifiedTime',
+      );
+
+      return response as drive.File;
+    } catch (e) {
+      print("Erro ao buscar metadados: $e");
+      return null;
+    }
   }
 
-  Future<File?> downloadMetadata(String fileId) async {
+  Future<File?> downloadMetadata(String fileId, {String? customPath}) async {
     if (_driveApi == null) return null;
 
     try {
-      // 1. Pega a pasta de documentos do celular
-      final directory = await getApplicationDocumentsDirectory();
-      final savePath = "${directory.path}/metadata.db";
+      // Se passarmos um caminho, usamos ele.
+      // Se não, ele usa o seu padrão atual (getDatabasesPath).
+      String savePath;
+      if (customPath != null) {
+        savePath = customPath;
+      } else {
+        final dbDir = await getDatabasesPath();
+        savePath = p.join(dbDir, 'metadata.db');
+      }
 
-      // 2. Faz a requisição de download para o Google
       final response =
           await _driveApi!.files.get(
                 fileId,
@@ -175,7 +188,6 @@ class GoogleDriveService {
               )
               as drive.Media;
 
-      // 3. Converte o stream de dados em um arquivo físico
       final List<int> dataStore = [];
       await for (final data in response.stream) {
         dataStore.addAll(data);
@@ -241,14 +253,34 @@ class GoogleDriveService {
     return list.files?.isNotEmpty == true ? list.files!.first : null;
   }
 
-  Future<File?> downloadBookFile(String fileId, String fileName) async {
+  Future<File?> downloadBookFile(
+    String fileId,
+    String fileName, {
+    String? customPath,
+  }) async {
     if (_driveApi == null) {
       print("!!!!! ALERTA: A API DO DRIVE ESTÁ NULA NO SERVICE !!!!!");
       return null;
     }
 
     try {
-      final directory = await getApplicationDocumentsDirectory();
+      //final directory = await getApplicationDocumentsDirectory();
+      //final file = File("${directory.path}/$fileName");
+
+      // 1. Define o diretório base
+      Directory directory;
+      if (customPath != null && customPath.isNotEmpty) {
+        directory = Directory(customPath);
+      } else {
+        // Se não vier caminho customizado, mantém o seu padrão original
+        directory = await getApplicationDocumentsDirectory();
+      }
+
+      // Garante que a pasta existe
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
       final file = File("${directory.path}/$fileName");
 
       print("!!!!! ESTOU DENTRO DO SERVICE AGORA !!!!!");
@@ -284,6 +316,23 @@ class GoogleDriveService {
       // ESTE PRINT É O MAIS IMPORTANTE AGORA
       print("ERRO REAL NA API DRIVE: $e");
       return null;
+    }
+  }
+
+  Future<bool> restoreSession() async {
+    try {
+      // Tenta pegar o usuário que já estava logado antes
+      _currentUser = await _googleSignIn.signInSilently();
+      if (_currentUser != null) {
+        final httpClient = await _googleSignIn.authenticatedClient();
+        if (httpClient != null) {
+          _driveApi = drive.DriveApi(httpClient);
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      return false;
     }
   }
 }

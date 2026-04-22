@@ -1,11 +1,17 @@
 import 'dart:io';
-import 'package:calibre_drive/views/details_screen.dart';
+import 'package:calibre_drive/services/settings_service.dart';
+import 'package:calibre_drive/views/book_details_screen.dart';
+//import 'package:calibre_drive/views/file_manager_page.dart';
+//import 'package:calibre_drive/views/settings_page.dart';
 import 'package:calibre_drive/widgets/book_cover.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
+//import 'package:shared_preferences/shared_preferences.dart';
 import '../models/book_model.dart';
 import '../services/database_service.dart';
 import '../services/google_drive_service.dart';
+import 'custom_drawer.dart';
 
 // Definimos os modos de visualização
 enum ViewMode { grid, listWithCover, compactList }
@@ -27,14 +33,23 @@ class _HomeScreenState extends State<HomeScreen> {
   String _searchQuery = "";
   List<BookModel> _books = [];
   bool _isLoading = true;
+  //String? _currentDownloadPath;
 
   Map<String, String> _authHeaders = {};
 
   @override
   void initState() {
     super.initState();
+    //_loadSettings();
     _initApp();
   }
+
+  // Future<void> _loadSettings() async {
+  //   final prefs = await SharedPreferences.getInstance();
+  //   setState(() {
+  //     _currentDownloadPath = prefs.getString('download_path');
+  //   });
+  // }
 
   Future<void> _initApp() async {
     await _dbService.initDatabases();
@@ -65,34 +80,52 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       if (dbFileId != null) {
+        await SettingsService.setDbFileId(dbFileId); // Salva para uso futuro
+
         final remoteMeta = await _googleDriveService.getFileMetadata(dbFileId);
-        final localFile = File(
-          "${(await getApplicationDocumentsDirectory()).path}/metadata.db",
-        );
+        // final localFile = File(
+        //   "${(await getApplicationDocumentsDirectory()).path}/metadata.db",
+        // );
 
+        // --- NOVA LÓGICA DE VERIFICAÇÃO À PROVA DE FALHAS ---
         bool needsUpdate = true;
-        if (remoteMeta != null) {
-          // <--- Verificação de segurança para o objeto
-          if (await localFile.exists()) {
-            DateTime localDate = await localFile.lastModified();
 
-            // Usamos ?. para acessar a data e ?? para o padrão caso seja nulo
-            DateTime remoteDate =
-                remoteMeta.modifiedTime ??
-                DateTime.fromMillisecondsSinceEpoch(0);
+        // 1. Pegar a data salva no SharedPreferences
+        String? lastSyncLocalStr = await SettingsService.getLastSync();
 
-            // Se o remoto NÃO for mais novo que o local (com margem de 1s), não precisa baixar
-            if (!remoteDate.isAfter(
-              localDate.add(const Duration(seconds: 1)),
-            )) {
+        // 2. Localizar o arquivo onde o banco REALMENTE é aberto
+        // Importante: use o mesmo caminho que o seu _dbService usa!
+        final dbDir = await getDatabasesPath();
+        final localFile = File("$dbDir/metadata.db");
+
+        bool fileExists = await localFile.exists();
+
+        if (remoteMeta != null && remoteMeta.modifiedTime != null) {
+          // Pegamos o timestamp da nuvem em milissegundos
+          int remoteMs = remoteMeta.modifiedTime!
+              .toUtc()
+              .millisecondsSinceEpoch;
+
+          if (fileExists && lastSyncLocalStr != null) {
+            // Pegamos o timestamp local salvo
+            int localMs = DateTime.parse(
+              lastSyncLocalStr,
+            ).toUtc().millisecondsSinceEpoch;
+
+            // Se o remoto for menor ou igual ao local, não precisa de update
+            if (remoteMs <= localMs) {
               needsUpdate = false;
             }
+
+            // Debug para você ver no console exatamente o que está acontecendo
+            print(
+              "DEBUG SYNC: Remoto: $remoteMs | Local: $localMs | Update: $needsUpdate",
+            );
           }
-        } else {
-          // Se não conseguirmos pegar o metadado remoto, por segurança,
-          // tentamos usar o local se ele existir.
-          needsUpdate = !await localFile.exists();
         }
+        // ---------------------------------------------------
+
+        print("DEBUG: Needs Update: $needsUpdate");
 
         if (needsUpdate) {
           bool? confirm = await _showUpdateDialog();
@@ -100,21 +133,44 @@ class _HomeScreenState extends State<HomeScreen> {
             final file = await _googleDriveService.downloadMetadata(dbFileId);
             if (file != null) {
               await _dbService.openCalibreDatabase(file.path);
-              // Atualiza capas apenas se o usuário baixar o banco novo
+
+              // Importante: scanEverything deve ocorrer antes de finalizar a carga
               await _googleDriveService.scanEverything(folderId, _dbService);
 
-              setState(() {
-                _isLoading = false;
-              });
+              // SALVA A DATA DA NUVEM COMO DATA LOCAL (O "CARIMBO")
+              if (remoteMeta?.modifiedTime != null) {
+                await SettingsService.setLastSync(
+                  remoteMeta!.modifiedTime!.toUtc().toIso8601String(),
+                );
+              }
+
+              setState(() => _isLoading = false);
             }
           } else {
+            print("DEBUG: 1-Abrindo banco local existente...");
             await _dbService.openExistingDatabase();
           }
         } else {
-          await _dbService.openExistingDatabase();
+          print("DEBUG: Já atualizado. Abrindo banco local...");
+
+          // Pegamos o caminho padrão onde o banco é salvo no Android
+          final dbDir = await getDatabasesPath();
+          final localPath = "$dbDir/metadata.db";
+
+          // Verificamos se o arquivo realmente existe antes de tentar abrir
+          if (await File(localPath).exists()) {
+            await _dbService.openCalibreDatabase(localPath);
+          } else {
+            print("ERRO: O arquivo deveria estar aqui, mas sumiu: $localPath");
+            // Caso o arquivo suma, talvez valha forçar o needsUpdate = true;
+          }
         }
       }
 
+      // Garante que o carregamento pare antes de tentar pesquisar
+      setState(() => _isLoading = false);
+
+      // Agora que o banco está aberto (via download ou via local), a busca vai funcionar
       _performSearch();
     } catch (e) {
       print("Erro: $e");
@@ -181,6 +237,11 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           _buildViewModeSelector(), // Botão de alternar Grid/Lista
         ],
+      ),
+      drawer: CustomDrawer(
+        onSyncComplete: () {
+          _performSearch(); // Ou a função que você usa para listar os livros
+        },
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())

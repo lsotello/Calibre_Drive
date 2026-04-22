@@ -1,9 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'views/home_screen.dart'; // Importa a tela que criamos
 
-void main() {
+void main() async {
   // Garante que as permissões nativas (storage/auth) funcionem antes do app abrir
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Trava a orientação (ex: apenas Portrait Up)
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    // DeviceOrientation.portraitDown, // Opcional: permite de ponta cabeça
+  ]);
+
   runApp(const CalibreDriveApp());
 }
 
