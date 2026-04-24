@@ -1,13 +1,9 @@
 import 'dart:io';
 import 'package:calibre_drive/services/settings_service.dart';
 import 'package:calibre_drive/views/book_details_screen.dart';
-//import 'package:calibre_drive/views/file_manager_page.dart';
-//import 'package:calibre_drive/views/settings_page.dart';
 import 'package:calibre_drive/widgets/book_cover.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
-//import 'package:shared_preferences/shared_preferences.dart';
 import '../models/book_model.dart';
 import '../services/database_service.dart';
 import '../services/google_drive_service.dart';
@@ -239,6 +235,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       drawer: CustomDrawer(
+        authHeaders: _authHeaders,
         onSyncComplete: () {
           _performSearch(); // Ou a função que você usa para listar os livros
         },

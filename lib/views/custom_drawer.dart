@@ -9,7 +9,13 @@ import 'file_manager_page.dart';
 
 class CustomDrawer extends StatefulWidget {
   final VoidCallback? onSyncComplete;
-  const CustomDrawer({super.key, this.onSyncComplete});
+  final Map<String, String> authHeaders;
+
+  const CustomDrawer({
+    super.key,
+    this.onSyncComplete,
+    required this.authHeaders,
+  });
 
   @override
   State<CustomDrawer> createState() => _CustomDrawerState();
@@ -160,7 +166,11 @@ class _CustomDrawerState extends State<CustomDrawer> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => FileManagerPage(directoryPath: path),
+                    builder: (context) => FileManagerPage(
+                      directoryPath: path,
+                      authHeaders: widget
+                          .authHeaders, // repasse os headers recebidos da Home
+                    ),
                   ),
                 );
               }
