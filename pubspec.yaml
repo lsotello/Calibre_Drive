@@ -1,7 +1,7 @@
 name: calibre_drive
 description: "Cliente para bibliotecas Calibre no Google Drive. Navegue em sua coleção de livros, veja detalhes e baixe-os para o seu dispositivo."
 publish_to: 'none'
-version: 0.1.0+1
+version: 2.0.0+1
 
 environment:
   sdk: ^3.11.4
@@ -24,6 +24,7 @@ dependencies:
   intl: ^0.19.0
   shared_preferences: ^2.2.3
   package_info_plus: ^9.0.1
+  logger: ^2.4.0
 
 dev_dependencies:
   flutter_test:
