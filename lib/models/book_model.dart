@@ -4,9 +4,10 @@ class BookModel {
   final String path;
   final String author;
   final String? series;
-  final double? seriesIndex;
+  final double seriesIndex;
   final List<String> formats;
   final String? coverId;
+  final String readingStatus;
 
   BookModel({
     required this.id,
@@ -14,9 +15,10 @@ class BookModel {
     required this.path,
     required this.author,
     this.series,
-    this.seriesIndex,
+    required this.seriesIndex,
     this.formats = const [],
     this.coverId,
+    this.readingStatus = 'pending',
   });
 
   // Converte o mapa do SQLite para o nosso objeto Dart
@@ -24,16 +26,21 @@ class BookModel {
     Map<String, dynamic> map,
     List<String> formats, {
     String? coverId,
+    String? readingStatus,
   }) {
     return BookModel(
-      id: map['id'],
-      title: map['title'],
-      path: map['path'],
-      author: map['author_name'] ?? 'Autor Desconhecido',
-      series: map['series_name'],
-      seriesIndex: map['series_index'],
+      id: map['id'] ?? 0,
+      title: map['title']?.toString() ?? 'Sem Título', // Segurança contra nulo
+      path: map['path']?.toString() ?? '', // Segurança contra nulo
+      author: map['author_name']?.toString() ?? 'Autor Desconhecido',
+      series: map['series_name']?.toString(),
+      seriesIndex: map['series_index'] != null
+          ? (double.tryParse(map['series_index'].toString()) ?? 0.0)
+          : 0.0,
       formats: formats,
-      coverId: coverId, // O ID que veio da sua varredura/cache
+      readingStatus:
+          map['reading_status']?.toString() ?? readingStatus ?? 'pending',
+      coverId: coverId ?? map['cover_id']?.toString() ?? '',
     );
   }
 }
